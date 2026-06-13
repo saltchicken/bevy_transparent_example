@@ -1,6 +1,7 @@
-use bevy::asset::RenderAssetUsages; // Fix 1: Correct import path
+use bevy::asset::RenderAssetUsages; 
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::window::CompositeAlphaMode;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
@@ -18,11 +19,16 @@ struct FractalState {
 
 fn main() {
     App::new()
+        // Make the camera clear with a transparent background
+        .insert_resource(ClearColor(Color::NONE))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                // Fix 2: Pass u32 directly instead of casting to f32
                 resolution: (WIDTH, HEIGHT).into(),
                 title: "Fractal Flame Software Renderer".into(),
+                // Enable window transparency at the OS level
+                transparent: true,
+                decorations: false,
+                composite_alpha_mode: CompositeAlphaMode::PreMultiplied,
                 ..default()
             }),
             ..default()
@@ -42,14 +48,14 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        &[0, 0, 0, 255],
+        // Fill initially with completely transparent black pixels
+        &[0, 0, 0, 0],
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
 
     let image_handle = images.add(image);
 
-    // Fix 3: Assign the image handle directly to the Sprite's `image` field
     commands.spawn(Sprite {
         image: image_handle.clone(),
         custom_size: Some(Vec2::new(WIDTH as f32, HEIGHT as f32)),
@@ -110,7 +116,6 @@ fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Ima
     if let Some(image) = images.get_mut(&state.image_handle) {
         let max_d = state.max_density as f32;
 
-        // Fix 4: Safely unwrap the Option<Vec<u8>> holding the pixel buffer
         if let Some(data) = &mut image.data {
             for (i, &density) in state.histogram.iter().enumerate() {
                 if density == 0 {
