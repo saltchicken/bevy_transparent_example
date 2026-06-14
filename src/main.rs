@@ -1,11 +1,12 @@
-use bevy::asset::RenderAssetUsages; 
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::CompositeAlphaMode;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
-const ITERATIONS_PER_FRAME: usize = 10;
+// CRITICAL: Bumped from 10 to 50,000. Chaos needs volume to render quickly.
+const ITERATIONS_PER_FRAME: usize = 10000;
 
 #[derive(Resource)]
 struct FractalState {
@@ -19,13 +20,11 @@ struct FractalState {
 
 fn main() {
     App::new()
-        // Make the camera clear with a transparent background
         .insert_resource(ClearColor(Color::NONE))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 resolution: (WIDTH, HEIGHT).into(),
                 title: "Fractal Flame Software Renderer".into(),
-                // Enable window transparency at the OS level
                 transparent: true,
                 decorations: false,
                 composite_alpha_mode: CompositeAlphaMode::PreMultiplied,
@@ -48,7 +47,6 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        // Fill initially with completely transparent black pixels
         &[0, 0, 0, 0],
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
@@ -79,25 +77,48 @@ fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Ima
 
     for _ in 0..ITERATIONS_PER_FRAME {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let r = (seed >> 32) % 3;
+
+        // Increased to 4 to accommodate the new transformation
+        let r = (seed >> 32) % 4;
+
+        // 1. Affine Step (Linear structure)
+        let nx;
+        let ny;
 
         match r {
             0 => {
-                x = x * 0.5;
-                y = y * 0.5 + 0.5;
+                nx = x * 0.5;
+                ny = y * 0.5 + 0.5;
             }
             1 => {
-                x = x * 0.5 - 0.5;
-                y = y * 0.5 - 0.5;
+                nx = x * 0.5 - 0.5;
+                ny = y * 0.5 - 0.5;
             }
+            2 => {
+                nx = x * 0.5 + 0.5;
+                ny = y * 0.5 - 0.5;
+            }
+            // New Transform: Rotate and scale to break the triangle
             _ => {
-                x = x * 0.5 + 0.5;
-                y = y * 0.5 - 0.5;
+                nx = x * 0.4 - y * 0.4;
+                ny = x * 0.4 + y * 0.4;
             }
         }
 
-        let px = ((x + 1.0) * 0.5 * WIDTH as f32) as i32;
-        let py = ((y + 1.0) * 0.5 * HEIGHT as f32) as i32;
+        // 2. Non-Linear Step (The Chaos)
+        // Applying a "Swirl" variation
+        let r2 = nx * nx + ny * ny;
+        let sin_r = r2.sin();
+        let cos_r = r2.cos();
+
+        x = nx * sin_r - ny * cos_r;
+        y = nx * cos_r + ny * sin_r;
+
+        // Map back to screen space. We zoom out by dividing by 1.2
+        // because the swirl can push coordinates further outwards.
+        let zoom_factor = 1.2;
+        let px = ((x / zoom_factor + 1.0) * 0.5 * WIDTH as f32) as i32;
+        let py = ((y / zoom_factor + 1.0) * 0.5 * HEIGHT as f32) as i32;
 
         if px >= 0 && px < WIDTH as i32 && py >= 0 && py < HEIGHT as i32 {
             let index = (py as u32 * WIDTH + px as u32) as usize;
@@ -123,14 +144,15 @@ fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Ima
                 }
 
                 let brightness = (density as f32).ln() / max_d.ln();
-                // let brightness = (density as f32 + 1.0).ln() / (max_d + 1.0).ln();
-                let color_val = (brightness * 255.0).min(255.0) as u8;
+
+                // powf(0.8) sharpens the falloff, creating brighter hot spots
+                let color_val = (brightness.powf(0.8) * 255.0).min(255.0) as u8;
 
                 let pixel_idx = i * 4;
 
                 data[pixel_idx] = color_val; // Red
-                data[pixel_idx + 1] = color_val / 2; // Green
-                data[pixel_idx + 2] = color_val / 4; // Blue
+                data[pixel_idx + 1] = (color_val as f32 * 0.6) as u8; // Green
+                data[pixel_idx + 2] = (color_val as f32 * 0.2) as u8; // Blue
                 data[pixel_idx + 3] = 255; // Alpha
             }
         }
