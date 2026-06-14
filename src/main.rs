@@ -5,15 +5,34 @@ use bevy::window::CompositeAlphaMode;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
-// CRITICAL: Bumped from 10 to 50,000. Chaos needs volume to render quickly.
-const ITERATIONS_PER_FRAME: usize = 10000;
+const ITERATIONS_PER_FRAME: usize = 2000000;
+
+#[derive(Clone, Copy)]
+struct AffineTransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+    color: [f32; 3],
+}
+
+#[derive(Resource)]
+struct FractalConfig {
+    transforms: [AffineTransform; 4],
+    zoom: f32,
+}
 
 #[derive(Resource)]
 struct FractalState {
     x: f32,
     y: f32,
+    c_r: f32,
+    c_g: f32,
+    c_b: f32,
     seed: u64,
-    histogram: Vec<u32>,
+    histogram: Vec<(u32, f32, f32, f32)>,
     max_density: u32,
     image_handle: Handle<Image>,
 }
@@ -60,53 +79,95 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ..default()
     });
 
+    // Insert the dynamic configuration for the shapes and colors
+    commands.insert_resource(FractalConfig {
+        zoom: 1.2,
+        transforms: [
+            // Transform 0: Vibrant Red
+            AffineTransform { a: 0.5, b: 0.0, c: 0.0, d: 0.0, e: 0.5, f: 0.5, color: [1.0, 0.1, 0.2] },
+            // Transform 1: Cyan
+            AffineTransform { a: 0.5, b: 0.0, c: -0.5, d: 0.0, e: 0.5, f: -0.5, color: [0.1, 0.8, 1.0] },
+            // Transform 2: Purple
+            AffineTransform { a: 0.5, b: 0.0, c: 0.5, d: 0.0, e: 0.5, f: -0.5, color: [0.6, 0.1, 1.0] },
+            // Transform 3: Gold (The Rotator)
+            AffineTransform { a: 0.4, b: -0.4, c: 0.0, d: 0.4, e: 0.4, f: 0.0, color: [1.0, 0.8, 0.1] },
+        ],
+    });
+
     commands.insert_resource(FractalState {
         x: 0.0,
         y: 0.0,
+        c_r: 1.0,
+        c_g: 1.0,
+        c_b: 1.0,
         seed: 123456789,
-        histogram: vec![0; (WIDTH * HEIGHT) as usize],
+        histogram: vec![(0, 0.0, 0.0, 0.0); (WIDTH * HEIGHT) as usize],
         max_density: 1,
         image_handle,
     });
 }
 
-fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Image>>) {
+fn render_fractal(
+    mut state: ResMut<FractalState>,
+    mut config: ResMut<FractalConfig>, // 1. Now we can mutate the config!
+    mut images: ResMut<Assets<Image>>,
+) {
+    // 2. Animate 'a' across all transforms
+    for transform in &mut config.transforms {
+        transform.a += 0.001; // (This will move fast! Try 0.001 if it's too chaotic)
+    }
+
+    // 3. Fade the canvas instead of clearing it (creates motion trails)
+    let mut local_max_density = 1; // Track max density locally to satisfy the borrow checker
+    
+    for entry in state.histogram.iter_mut() {
+        // The fade factor. 0.90 means 90% remains. 
+        // Closer to 1.0 = longer trails. Closer to 0.0 = faster fade.
+        let fade_factor = 0.90; 
+
+        // Decay the density and the color sums
+        entry.0 = (entry.0 as f32 * fade_factor) as u32;
+        entry.1 *= fade_factor;
+        entry.2 *= fade_factor;
+        entry.3 *= fade_factor;
+
+        // Clean up floating point dust and calculate the max density locally
+        if entry.0 == 0 {
+            entry.1 = 0.0;
+            entry.2 = 0.0;
+            entry.3 = 0.0;
+        } else if entry.0 > local_max_density {
+            local_max_density = entry.0;
+        }
+    }
+
+    // Assign the new max density back to the state now that the loop is over
+    state.max_density = local_max_density;
+
     let mut x = state.x;
     let mut y = state.y;
+    let mut c_r = state.c_r;
+    let mut c_g = state.c_g;
+    let mut c_b = state.c_b;
     let mut seed = state.seed;
 
     for _ in 0..ITERATIONS_PER_FRAME {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let r = ((seed >> 32) % 4) as usize; // Make sure this is % 4 to catch all transforms!
 
-        // Increased to 4 to accommodate the new transformation
-        let r = (seed >> 32) % 4;
+        // Fetch the chosen transform
+        let transform = &config.transforms[r];
 
-        // 1. Affine Step (Linear structure)
-        let nx;
-        let ny;
+        // Smoothly pull the point's color towards the transform's base color
+        c_r = (c_r + transform.color[0]) * 0.5;
+        c_g = (c_g + transform.color[1]) * 0.5;
+        c_b = (c_b + transform.color[2]) * 0.5;
 
-        match r {
-            0 => {
-                nx = x * 0.5;
-                ny = y * 0.5 + 0.5;
-            }
-            1 => {
-                nx = x * 0.5 - 0.5;
-                ny = y * 0.5 - 0.5;
-            }
-            2 => {
-                nx = x * 0.5 + 0.5;
-                ny = y * 0.5 - 0.5;
-            }
-            // New Transform: Rotate and scale to break the triangle
-            _ => {
-                nx = x * 0.4 - y * 0.4;
-                ny = x * 0.4 + y * 0.4;
-            }
-        }
+        // Affine Step (Linear structure)
+        let nx = transform.a * x + transform.b * y + transform.c;
+        let ny = transform.d * x + transform.e * y + transform.f;
 
-        // 2. Non-Linear Step (The Chaos)
-        // Applying a "Swirl" variation
+        // Non-Linear Step (The Chaos - Swirl Variation)
         let r2 = nx * nx + ny * ny;
         let sin_r = r2.sin();
         let cos_r = r2.cos();
@@ -114,46 +175,67 @@ fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Ima
         x = nx * sin_r - ny * cos_r;
         y = nx * cos_r + ny * sin_r;
 
-        // Map back to screen space. We zoom out by dividing by 1.2
-        // because the swirl can push coordinates further outwards.
-        let zoom_factor = 1.2;
-        let px = ((x / zoom_factor + 1.0) * 0.5 * WIDTH as f32) as i32;
-        let py = ((y / zoom_factor + 1.0) * 0.5 * HEIGHT as f32) as i32;
+        // Map back to screen space using the configurable zoom
+        let px = ((x / config.zoom + 1.0) * 0.5 * WIDTH as f32) as i32;
+        let py = ((y / config.zoom + 1.0) * 0.5 * HEIGHT as f32) as i32;
 
         if px >= 0 && px < WIDTH as i32 && py >= 0 && py < HEIGHT as i32 {
             let index = (py as u32 * WIDTH + px as u32) as usize;
-            state.histogram[index] += 1;
+            
+            // Scope the mutable borrow of the histogram
+            let new_density = {
+                let entry = &mut state.histogram[index];
+                entry.0 += 1;
+                entry.1 += c_r;
+                entry.2 += c_g;
+                entry.3 += c_b;
+                entry.0
+            };
 
-            if state.histogram[index] > state.max_density {
-                state.max_density = state.histogram[index];
+            if new_density > state.max_density {
+                state.max_density = new_density;
             }
         }
     }
 
     state.x = x;
     state.y = y;
+    state.c_r = c_r;
+    state.c_g = c_g;
+    state.c_b = c_b;
     state.seed = seed;
 
+    // 4. Render to Texture
     if let Some(image) = images.get_mut(&state.image_handle) {
         let max_d = state.max_density as f32;
 
         if let Some(data) = &mut image.data {
-            for (i, &density) in state.histogram.iter().enumerate() {
+            for (i, &(density, r_sum, g_sum, b_sum)) in state.histogram.iter().enumerate() {
+                let pixel_idx = i * 4;
+
+                // If density is 0, we MUST clear the pixel so old frames don't stick around
                 if density == 0 {
+                    data[pixel_idx] = 0;
+                    data[pixel_idx + 1] = 0;
+                    data[pixel_idx + 2] = 0;
+                    data[pixel_idx + 3] = 0; // 0 Alpha (transparent)
                     continue;
                 }
 
+                // Standard logarithmic tone mapping for brightness
                 let brightness = (density as f32).ln() / max_d.ln();
+                let intensity = brightness.powf(0.8);
 
-                // powf(0.8) sharpens the falloff, creating brighter hot spots
-                let color_val = (brightness.powf(0.8) * 255.0).min(255.0) as u8;
+                // Average out the accumulated colors
+                let r_avg = r_sum / density as f32;
+                let g_avg = g_sum / density as f32;
+                let b_avg = b_sum / density as f32;
 
-                let pixel_idx = i * 4;
-
-                data[pixel_idx] = color_val; // Red
-                data[pixel_idx + 1] = (color_val as f32 * 0.6) as u8; // Green
-                data[pixel_idx + 2] = (color_val as f32 * 0.2) as u8; // Blue
-                data[pixel_idx + 3] = 255; // Alpha
+                // Multiply average color by the calculated intensity
+                data[pixel_idx] = (r_avg * intensity * 255.0).clamp(0.0, 255.0) as u8;
+                data[pixel_idx + 1] = (g_avg * intensity * 255.0).clamp(0.0, 255.0) as u8;
+                data[pixel_idx + 2] = (b_avg * intensity * 255.0).clamp(0.0, 255.0) as u8;
+                data[pixel_idx + 3] = 255;
             }
         }
     }
