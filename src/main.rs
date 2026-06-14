@@ -5,7 +5,7 @@ use bevy::window::CompositeAlphaMode;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
-const ITERATIONS_PER_FRAME: usize = 100;
+const ITERATIONS_PER_FRAME: usize = 10;
 
 #[derive(Resource)]
 struct FractalState {
@@ -123,6 +123,7 @@ fn render_fractal(mut state: ResMut<FractalState>, mut images: ResMut<Assets<Ima
                 }
 
                 let brightness = (density as f32).ln() / max_d.ln();
+                // let brightness = (density as f32 + 1.0).ln() / (max_d + 1.0).ln();
                 let color_val = (brightness * 255.0).min(255.0) as u8;
 
                 let pixel_idx = i * 4;
