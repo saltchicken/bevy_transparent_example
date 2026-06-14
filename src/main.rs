@@ -1,11 +1,12 @@
 use bevy::asset::RenderAssetUsages;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::CompositeAlphaMode;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
-const ITERATIONS_PER_FRAME: usize = 2000000;
+const ITERATIONS_PER_FRAME: usize = 200000;
 
 #[derive(Clone, Copy)]
 struct AffineTransform {
@@ -37,6 +38,10 @@ struct FractalState {
     image_handle: Handle<Image>,
 }
 
+// Marker component for our FPS Text
+#[derive(Component)]
+struct FpsText;
+
 fn main() {
     App::new()
         .insert_resource(ClearColor(Color::NONE))
@@ -51,8 +56,10 @@ fn main() {
             }),
             ..default()
         }))
+        // 1. Add the diagnostics plugin to track frame rate
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, render_fractal)
+        .add_systems(Update, (render_fractal, update_fps_text)) // 2. Register the update system
         .run();
 }
 
@@ -78,6 +85,18 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         custom_size: Some(Vec2::new(WIDTH as f32, HEIGHT as f32)),
         ..default()
     });
+
+    // 3. Spawn the UI Text element to display the FPS
+    commands.spawn((
+        Text::new("FPS: "),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        },
+        FpsText,
+    ));
 
     // Insert the dynamic configuration for the shapes and colors
     commands.insert_resource(FractalConfig {
@@ -107,22 +126,35 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     });
 }
 
+// 4. System to update the text with the latest FPS value
+fn update_fps_text(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut Text, With<FpsText>>,
+) {
+    for mut text in &mut query {
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
+            if let Some(value) = fps.smoothed() {
+                // Update the text string with the smoothed FPS value
+                text.0 = format!("FPS: {:.1}", value);
+            }
+        }
+    }
+}
+
 fn render_fractal(
     mut state: ResMut<FractalState>,
-    mut config: ResMut<FractalConfig>, // 1. Now we can mutate the config!
+    mut config: ResMut<FractalConfig>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    // 2. Animate 'a' across all transforms
+    // Animate 'a' across all transforms
     for transform in &mut config.transforms {
-        transform.a += 0.001; // (This will move fast! Try 0.001 if it's too chaotic)
+        transform.a += 0.001; 
     }
 
-    // 3. Fade the canvas instead of clearing it (creates motion trails)
-    let mut local_max_density = 1; // Track max density locally to satisfy the borrow checker
+    // Fade the canvas instead of clearing it (creates motion trails)
+    let mut local_max_density = 1; 
     
     for entry in state.histogram.iter_mut() {
-        // The fade factor. 0.90 means 90% remains. 
-        // Closer to 1.0 = longer trails. Closer to 0.0 = faster fade.
         let fade_factor = 0.90; 
 
         // Decay the density and the color sums
@@ -153,7 +185,7 @@ fn render_fractal(
 
     for _ in 0..ITERATIONS_PER_FRAME {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let r = ((seed >> 32) % 4) as usize; // Make sure this is % 4 to catch all transforms!
+        let r = ((seed >> 32) % 4) as usize; 
 
         // Fetch the chosen transform
         let transform = &config.transforms[r];
@@ -205,7 +237,7 @@ fn render_fractal(
     state.c_b = c_b;
     state.seed = seed;
 
-    // 4. Render to Texture
+    // Render to Texture
     if let Some(image) = images.get_mut(&state.image_handle) {
         let max_d = state.max_density as f32;
 
@@ -218,7 +250,7 @@ fn render_fractal(
                     data[pixel_idx] = 0;
                     data[pixel_idx + 1] = 0;
                     data[pixel_idx + 2] = 0;
-                    data[pixel_idx + 3] = 0; // 0 Alpha (transparent)
+                    data[pixel_idx + 3] = 0; 
                     continue;
                 }
 
